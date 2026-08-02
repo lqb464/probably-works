@@ -113,6 +113,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", nargs="+", required=True, help="One or more diagnostic YAML configs")
     parser.add_argument("--checkpoint", default=None, help="Override checkpoint path")
     parser.add_argument("--dataset", default=None, help="Override dataset name")
+    parser.add_argument(
+        "--root_dir",
+        "--root-dir",
+        dest="root_dir",
+        default=None,
+        help="Override dataset root directory",
+    )
+    parser.add_argument(
+        "--model-preset",
+        choices=["clip", "itself"],
+        default=None,
+        help="Architecture/evaluation flag preset: clip -> --only_global; itself -> --return_all --topk_type custom --modify_k",
+    )
     parser.add_argument("--output-dir", default=None, help="Override diagnostic output root")
     parser.add_argument("--batch-size", type=int, default=None, help="Override test batch size")
     parser.add_argument("--device", default=None, help="cpu, cuda, cuda:0, or auto")
@@ -148,6 +161,7 @@ def main() -> None:
 
 def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, object]:
     dataset_name = str(config["dataset"])
+    model_preset = normalize_model_preset(config.get("model_preset", "clip"))
     dataset_key = dataset_output_key(dataset_name)
     checkpoint = str(config.get("checkpoint") or "")
     if not checkpoint:
@@ -174,9 +188,12 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
     model = build_model(repo_args, num_classes)
     load_checkpoint(model, checkpoint)
     model.to(device)
+    if device.type == "cpu":
+        model.float()
     freeze_model(model)
     verify_frozen(model)
-    print(f"[{dataset_name}] checkpoint loaded; model frozen")
+    label = run_label(dataset_name, model_preset)
+    print(f"[{label}] checkpoint loaded; model frozen")
 
     extractor = GlobalHiddenExtractor(model, device=device, feature_dtype=feature_dtype)
     projection_info = inspect_clip_projection(model)
@@ -197,11 +214,11 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
     fidelity = compare_metrics(official_global, diagnostic_metrics, tolerance)
     if not fidelity["passed"]:
         raise RuntimeError(
-            f"[{dataset_name}] global fidelity FAILED: diffs={fidelity}, "
+            f"[{label}] global fidelity FAILED: diffs={fidelity}, "
             f"official={official_global}, diagnostic={diagnostic_metrics}"
         )
     print(
-        f"[{dataset_name}] global fidelity: PASS | "
+        f"[{label}] global fidelity: PASS | "
         f"R@1={official_global['r1']:.2f} R@5={official_global['r5']:.2f} "
         f"R@10={official_global['r10']:.2f} mAP={official_global['map']:.2f}"
     )
@@ -220,10 +237,11 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
         cache_dir,
         config,
         dataset_name,
+        model_preset,
         checkpoint,
         force=bool(config.get("force_recompute", False)),
     )
-    print(f"[{dataset_name}] hidden features cached")
+    print(f"[{label}] hidden features cached")
 
     scorer = HiddenScorer(device)
     query_indices = torch.arange(diagnostic_global.qids.numel(), dtype=torch.long)
@@ -317,6 +335,13 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
     serializable_topk = strip_tensor_values(topk_summary)
     summary = {
         "dataset": dataset_name,
+        "model_preset": model_preset,
+        "model_flags": {
+            "only_global": bool(repo_args.only_global),
+            "return_all": bool(repo_args.return_all),
+            "topk_type": str(repo_args.topk_type),
+            "modify_k": bool(repo_args.modify_k),
+        },
         "checkpoint": checkpoint,
         "num_queries": int(diagnostic_global.qids.numel()),
         "num_gallery": int(diagnostic_global.gids.numel()),
@@ -347,7 +372,7 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
         delta_hidden.numpy(),
         categories,
         output_dir / "margin_scatter.pdf",
-        f"{dataset_name}: Global vs Hidden Margins",
+        f"{dataset_name} ({model_preset}): Global vs Hidden Margins",
     )
     write_recovery_funnel(
         output_dir / "recovery_funnel.txt",
@@ -358,14 +383,14 @@ def run_one(config: Mapping[str, object], verbose: bool = False) -> Dict[str, ob
 
     recovery_ci = fixed_summary["recovery_rate_ci95"]
     print(
-        f"[{dataset_name}] fixed-pair recovery: "
+        f"[{label}] fixed-pair recovery: "
         f"{100.0 * fixed_summary['recovery_rate']:.1f}% "
         f"[{100.0 * recovery_ci[0]:.1f}, {100.0 * recovery_ci[1]:.1f}]"
     )
     if "50" in serializable_topk:
-        print(f"[{dataset_name}] Rescue@50: {100.0 * serializable_topk['50']['rescue_at_k']:.1f}%")
-    print(f"[{dataset_name}] complementarity gap: {100.0 * oracle_summary['complementarity_gap']:.1f}%")
-    print(f"[{dataset_name}] outputs -> {output_dir}")
+        print(f"[{label}] Rescue@50: {100.0 * serializable_topk['50']['rescue_at_k']:.1f}%")
+    print(f"[{label}] complementarity gap: {100.0 * oracle_summary['complementarity_gap']:.1f}%")
+    print(f"[{label}] outputs -> {output_dir}")
 
     return summary
 
@@ -382,6 +407,10 @@ def apply_cli_overrides(config: Dict[str, object], cli: argparse.Namespace) -> D
         config["checkpoint"] = cli.checkpoint
     if cli.dataset is not None:
         config["dataset"] = cli.dataset
+    if cli.root_dir is not None:
+        config["root_dir"] = cli.root_dir
+    if cli.model_preset is not None:
+        config["model_preset"] = cli.model_preset
     if cli.output_dir is not None:
         config["output_dir"] = cli.output_dir
     if cli.batch_size is not None:
@@ -413,7 +442,6 @@ def make_repo_args(config: Mapping[str, object]) -> Namespace:
     values["dataset_name"] = str(config.get("dataset", values["dataset_name"]))
     values["root_dir"] = str(config.get("root_dir", values["root_dir"]))
     values["training"] = False
-    values["only_global"] = True
     batch_size = int(config.get("batch_size", values["test_batch_size"]))
     values["batch_size"] = batch_size
     values["test_batch_size"] = batch_size
@@ -427,7 +455,54 @@ def make_repo_args(config: Mapping[str, object]) -> Namespace:
     if "stride_size" in config:
         values["stride_size"] = int(config["stride_size"])
 
+    apply_model_preset(values, config.get("model_preset", "clip"))
+
+    for key, value in (config.get("model_flags") or {}).items():
+        if key in {"only_global", "return_all", "modify_k"}:
+            values[key] = bool(value)
+        elif key == "topk_type":
+            values[key] = str(value)
+        else:
+            values[key] = value
+
+    for key in ("only_global", "return_all", "topk_type", "modify_k"):
+        if key in config:
+            if key in {"only_global", "return_all", "modify_k"}:
+                values[key] = bool(config[key])
+            else:
+                values[key] = str(config[key])
+
     return Namespace(**values)
+
+
+def apply_model_preset(values: Dict[str, object], model_preset: object) -> None:
+    preset = normalize_model_preset(model_preset)
+    if preset == "clip":
+        values["only_global"] = True
+        values["return_all"] = False
+        values["topk_type"] = "mean"
+        values["modify_k"] = False
+    elif preset == "itself":
+        values["only_global"] = False
+        values["return_all"] = True
+        values["topk_type"] = "custom"
+        values["modify_k"] = True
+    else:
+        raise ValueError(f"Unsupported model_preset: {model_preset}")
+
+
+def normalize_model_preset(model_preset: object) -> str:
+    preset = str(model_preset or "clip").strip().lower()
+    aliases = {
+        "global": "clip",
+        "only_global": "clip",
+        "only-global": "clip",
+        "clip_global": "clip",
+        "clip-global": "clip",
+        "itself_global_grab": "itself",
+        "global_grab": "itself",
+    }
+    return aliases.get(preset, preset)
 
 
 def read_yaml(path: Path) -> Dict[str, object]:
@@ -471,6 +546,7 @@ def load_or_extract_hidden(
     cache_dir: Path,
     config: Mapping[str, object],
     dataset_name: str,
+    model_preset: str,
     checkpoint: str,
     force: bool = False,
 ):
@@ -479,7 +555,11 @@ def load_or_extract_hidden(
     if use_cache and cache_path.exists() and not force:
         cached = safe_torch_load(cache_path, map_location="cpu")
         meta = cached.get("meta", {})
-        if meta.get("dataset") == dataset_name and meta.get("checkpoint") == checkpoint:
+        if (
+            meta.get("dataset") == dataset_name
+            and meta.get("model_preset") == model_preset
+            and meta.get("checkpoint") == checkpoint
+        ):
             return hidden_from_dict(cached["features"])
 
     features = extractor.extract_hidden_features(txt_loader, img_loader)
@@ -487,6 +567,7 @@ def load_or_extract_hidden(
         torch.save({
             "meta": {
                 "dataset": dataset_name,
+                "model_preset": model_preset,
                 "checkpoint": checkpoint,
                 "feature_dtype": features.feature_dtype,
                 "num_queries": int(features.text_features.shape[0]),
@@ -555,6 +636,10 @@ def set_seed(seed: int) -> None:
 
 def default_output_root() -> Path:
     return Path(__file__).resolve().parent / "outputs"
+
+
+def run_label(dataset_name: str, model_preset: str) -> str:
+    return f"{dataset_name}/{model_preset}"
 
 
 def dataset_output_key(dataset_name: str) -> str:

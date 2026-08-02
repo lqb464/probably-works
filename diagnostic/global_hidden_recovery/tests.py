@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 from diagnostic.global_hidden_recovery.feature_extractor import GlobalHiddenExtractor
 from diagnostic.global_hidden_recovery.evaluator import build_global_decisions
 from diagnostic.global_hidden_recovery.hidden_scorer import HiddenScorer
+from diagnostic.global_hidden_recovery.run_diagnostic import make_repo_args
 
 
 class HiddenScorerTests(unittest.TestCase):
@@ -74,6 +75,30 @@ class ExtractorTests(unittest.TestCase):
         self.assertTrue(torch.equal(hidden.token_ids[0], torch.tensor([10, 11])))
         self.assertTrue(torch.allclose(hidden.text_features.norm(dim=-1), torch.ones(1, 2)))
         self.assertTrue(torch.allclose(hidden.image_features.norm(dim=-1), torch.ones(1, 3)))
+
+
+class PresetTests(unittest.TestCase):
+    def test_clip_preset_flags(self):
+        args = make_repo_args({"dataset": "CUHK-PEDES", "model_preset": "clip"})
+        self.assertTrue(args.only_global)
+        self.assertFalse(args.return_all)
+        self.assertEqual(args.topk_type, "mean")
+        self.assertFalse(args.modify_k)
+
+    def test_itself_preset_flags(self):
+        args = make_repo_args({"dataset": "RSTPReid", "model_preset": "itself"})
+        self.assertFalse(args.only_global)
+        self.assertTrue(args.return_all)
+        self.assertEqual(args.topk_type, "custom")
+        self.assertTrue(args.modify_k)
+
+    def test_root_dir_override(self):
+        args = make_repo_args({
+            "dataset": "CUHK-PEDES",
+            "model_preset": "clip",
+            "root_dir": "/tmp/itself-data",
+        })
+        self.assertEqual(args.root_dir, "/tmp/itself-data")
 
 
 class DummyBase(torch.nn.Module):

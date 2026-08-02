@@ -30,6 +30,8 @@ CLI overrides include:
 --config
 --checkpoint
 --dataset
+--root_dir
+--model-preset
 --output-dir
 --batch-size
 --device
@@ -39,8 +41,29 @@ CLI overrides include:
 --verbose
 ```
 
-The diagnostic forces `only_global=True` because the official global CLIP path is
-the baseline under test.
+The default config uses the CLIP/global preset, which sets `only_global=True`.
+For a full ITSELF checkpoint, use:
+
+```bash
+python diagnostic/global_hidden_recovery/run_diagnostic.py \
+  --config diagnostic/global_hidden_recovery/configs/rstp.yaml \
+  --checkpoint /path/to/itself/best.pth \
+  --root_dir /path/to/data \
+  --model-preset itself
+```
+
+Model presets set the repository flags used to instantiate and load the
+checkpoint:
+
+```text
+clip   -> --only_global
+itself -> --return_all --topk_type custom --modify_k
+```
+
+`itself` also leaves `only_global=False`, so GRAB modules exist when loading a
+checkpoint trained with the full ITSELF path. The diagnostic still evaluates the
+official global embedding path separately from the parameter-free hidden MaxSim
+readout.
 
 ## Outputs
 
@@ -79,4 +102,3 @@ score(Q, I) = mean_t max_p dot(text_token_t, image_patch_p)
 Text hidden vectors exclude padding, start-of-text, and end-of-text. Image hidden
 vectors exclude the visual CLS token. Both sides are projected through the
 checkpoint's CLIP projection path and L2-normalized per token/patch.
-

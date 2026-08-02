@@ -110,6 +110,7 @@ def write_combined_summary(summary_rows: Sequence[Mapping[str, object]], path: P
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "dataset",
+        "model_preset",
         "global_r1",
         "global_r5",
         "global_r10",
@@ -135,6 +136,7 @@ def write_combined_summary(summary_rows: Sequence[Mapping[str, object]], path: P
             recovery_ci = fixed.get("recovery_rate_ci95", [0.0, 0.0])
             writer.writerow({
                 "dataset": summary["dataset"],
+                "model_preset": summary.get("model_preset", ""),
                 "global_r1": summary["official_global"]["r1"],
                 "global_r5": summary["official_global"]["r5"],
                 "global_r10": summary["official_global"]["r10"],
@@ -152,4 +154,3 @@ def write_combined_summary(summary_rows: Sequence[Mapping[str, object]], path: P
                 "oracle_correct_rate": oracle["oracle_correct_rate"],
                 "complementarity_gap": oracle["complementarity_gap"],
             })
-
