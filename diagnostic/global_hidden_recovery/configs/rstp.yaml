@@ -1,0 +1,26 @@
+dataset: RSTPReid
+checkpoint: ""
+split: test
+root_dir: data
+
+device: cuda
+batch_size: 128
+num_workers: 4
+seed: 42
+
+topk:
+  - 10
+  - 20
+  - 50
+  - 100
+
+cache_features: true
+feature_dtype: float16
+pair_batch_size: 512
+
+bootstrap:
+  repetitions: 2000
+  confidence: 0.95
+
+fidelity_tolerance: 0.0001
+
