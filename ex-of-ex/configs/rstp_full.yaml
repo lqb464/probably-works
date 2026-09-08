@@ -1,0 +1,38 @@
+dataset: RSTPReid
+model_preset: clip
+checkpoint: ""
+root_dir: data
+split: test
+
+device: auto
+batch_size: 128
+num_workers: 4
+pair_batch_size: 256
+feature_dtype: float16
+seed: 42
+
+cache_features: true
+topk: [10, 20, 50, 100]
+fusion_weights: [0.1, 0.2, 0.3, 0.4, 0.5]
+
+# The full sweep reuses exactly the same cache as rstp_fast.yaml.
+scorers:
+  - {name: maxsim, kind: maxsim}
+  - {name: topm_m2, kind: topm, m: 2}
+  - {name: topm_m3, kind: topm, m: 3}
+  - {name: topm_m5, kind: topm, m: 5}
+  - {name: scan_soft_t003, kind: softmax_t2i, temperature: 0.03}
+  - {name: scan_soft_t005, kind: softmax_t2i, temperature: 0.05}
+  - {name: scan_soft_t010, kind: softmax_t2i, temperature: 0.10}
+  - {name: smooth_chamfer_a5, kind: smooth_chamfer, alpha: 5.0}
+  - {name: smooth_chamfer_a10, kind: smooth_chamfer, alpha: 10.0}
+  - {name: smooth_chamfer_a20, kind: smooth_chamfer, alpha: 20.0}
+  - {name: cfine_cross_t003, kind: cfine_cross_grained, temperature: 0.03}
+  - {name: cfine_cross_t005, kind: cfine_cross_grained, temperature: 0.05}
+  - {name: cfine_cross_t010, kind: cfine_cross_grained, temperature: 0.10}
+  - {name: tokenflow_l5, kind: tokenflow_stable, lambda: 5.0, importance_floor: 0.05}
+  - {name: tokenflow_l10, kind: tokenflow_stable, lambda: 10.0, importance_floor: 0.05}
+  - {name: tokenflow_l20, kind: tokenflow_stable, lambda: 20.0, importance_floor: 0.05}
+  - {name: sinkhorn_e003_i10, kind: sinkhorn_ot, epsilon: 0.03, iterations: 10}
+  - {name: sinkhorn_e005_i10, kind: sinkhorn_ot, epsilon: 0.05, iterations: 10}
+  - {name: uniform_mean_control, kind: uniform_mean}
