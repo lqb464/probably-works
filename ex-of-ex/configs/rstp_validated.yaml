@@ -1,0 +1,39 @@
+dataset: RSTPReid
+model_preset: clip
+checkpoint: ""
+root_dir: data
+split: test
+
+device: auto
+batch_size: 128
+num_workers: 4
+pair_batch_size: 384
+feature_dtype: float16
+seed: 42
+
+cache_features: true
+topk: [10, 20, 50]
+fusion_weights: [0.1, 0.2, 0.3, 0.5]
+
+validated:
+  enabled: true
+  legacy_test_sweep: false
+  setwise_negative_counts: [1, 5, 10]
+  setwise_report_negatives: 10
+  probe_negatives: 10
+  probe_regularization_c: 1.0
+  gating_harm_budgets: [0.01, 0.02, 0.05]
+  gating_threshold_steps: 41
+  bootstrap_repetitions: 300
+  bootstrap_confidence: 0.95
+
+scorers:
+  - {name: maxsim, kind: maxsim}
+  - {name: topm_m3, kind: topm, m: 3}
+  - {name: topm_m5, kind: topm, m: 5}
+  - {name: scan_soft_t005, kind: softmax_t2i, temperature: 0.05}
+  - {name: smooth_chamfer_a10, kind: smooth_chamfer, alpha: 10.0}
+  - {name: cfine_cross_t005, kind: cfine_cross_grained, temperature: 0.05}
+  - {name: tokenflow_l10, kind: tokenflow_stable, lambda: 10.0, importance_floor: 0.05}
+  - {name: sinkhorn_e005_i8, kind: sinkhorn_ot, epsilon: 0.05, iterations: 8}
+  - {name: uniform_mean_control, kind: uniform_mean}

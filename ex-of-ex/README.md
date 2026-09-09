@@ -99,6 +99,39 @@ Phần ngoài top-K giữ nguyên thứ tự global, nên R@K và mAP là metric
 
 Nếu mọi scorer đều có fixed-pair recovery nhưng local rerank/fusion không tăng R@1, hidden có tín hiệu nhưng thiếu cơ chế confidence/gating. Nếu top-m/softmax/OT thắng MaxSim ổn định, vấn đề có bằng chứng nằm ở aggregation. Nếu tất cả đều thất bại tương tự, giả thuyết “hidden cuối chứa đủ thông tin sửa lỗi” yếu hơn, thay vì chỉ đổ lỗi cho MaxSim.
 
+## Bốn thí nghiệm validation-selected
+
+Các file `*_validated.yaml` bật thêm khối `validated`. Một lệnh `run_experiments.py`
+vẫn extract test features đúng một lần, sau đó extract/cache official validation split và
+chạy bốn phép thử dưới `RUN_DIR/validated/`:
+
+Các config này đặt `legacy_test_sweep: false`: grid scorer/K/fusion cũ không được
+đánh giá bằng test labels. Grid chỉ chạy trên validation; test nhận cấu hình đã khóa.
+Muốn tái tạo đúng thí nghiệm P–W1 cũ thì tiếp tục dùng các config `*_fast.yaml`.
+
+1. `setwise_summary.csv`: oracle representation diagnostic. Mọi positive của query
+   được so với top-1/5/10 hard negatives cố định từ global baseline. Báo setwise
+   accuracy, pairwise AUC, MRR, recovery/harm, paired delta so với MaxSim và
+   identity-bootstrap CI.
+2. `probe_results.csv`: logistic probe có regularization, train trên validation
+   identities và test trên test identities. So sánh `global_only`, `hidden_only`,
+   `global_plus_hidden` và `permuted_hidden_control` với identity-balanced weights.
+3. `reranking_validation_grid.csv` và `reranking_selected_test.csv`: chọn
+   scorer/K/fusion trên validation, rồi khóa cấu hình để rerank global top-K ở test.
+   Positive không được chèn vào candidate set.
+4. `gating_summary.csv`: chọn uncertainty gate trên validation dưới các harm budget
+   1%, 2% và 5%, rồi áp đúng threshold đã khóa lên test.
+
+`coverage.csv` là ceiling quan trọng: nếu positive không nằm trong global top-K thì
+mọi top-K reranker đều không thể cứu query đó. `summary.json` ghi protocol và đường
+dẫn của toàn bộ output. Log của bốn phép thử dùng chung `run.log` của run để truy vết.
+
+Các config `*_validated.yaml` mặc định dùng 300 identity-bootstrap repetitions để giữ
+thời gian vừa phải. Khi làm bảng cuối cho paper, tăng
+`validated.bootstrap_repetitions` lên 2000 và giữ nguyên mọi hyperparameter khác.
+
+Các cell Kaggle hoàn chỉnh nằm trong `KAGGLE_CELLS.md`.
+
 ## Nguồn phương pháp
 
 - FILIP late interaction / token-wise MaxSim: [Yao et al., ICLR 2022](https://openreview.net/forum?id=cpDhcsEDC2).

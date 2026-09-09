@@ -176,6 +176,9 @@ def run_one(
     feature_dtype = str(config.get("feature_dtype", "float16"))
     fusion_weights = [float(v) for v in config.get("fusion_weights", [0.1, 0.2, 0.3, 0.5])]
     specs = build_specs(config.get("scorers", []))
+    validated_cfg = config.get("validated") or {}
+    validated_enabled = bool(validated_cfg.get("enabled", False))
+    legacy_test_sweep = bool(validated_cfg.get("legacy_test_sweep", True))
 
     logger.info("Run ID: %s", run_id)
     logger.info("Dataset: %s | preset: %s | device: %s", dataset_name, model_preset, device)
@@ -268,24 +271,29 @@ def run_one(
     if (best_positive < 0).any() or (best_negative < 0).any():
         raise RuntimeError("Every query must have a positive and a negative gallery example")
 
-    # One call scores fixed positive and negative pairs for every method.
-    stage = time.perf_counter()
-    fixed_all = score_pairs_all(
-        specs=specs,
-        text_features=hidden_features.text_features,
-        text_mask=hidden_features.text_mask,
-        image_features=hidden_features.image_features,
-        query_indices=torch.cat([query_indices, query_indices]),
-        gallery_indices=torch.cat([best_positive, best_negative]),
-        device=device,
-        batch_size=pair_batch_size,
-        query_global=global_features.qfeats,
-        gallery_global=global_features.gfeats,
-    )
-    fixed_scores = {
-        name: (values[:num_queries], values[num_queries:]) for name, values in fixed_all.items()
-    }
-    logger.info("Fixed-pair sweep completed in %.1fs", time.perf_counter() - stage)
+    fixed_scores = {}
+    if legacy_test_sweep:
+        # One call scores fixed positive and negative pairs for every method.
+        stage = time.perf_counter()
+        fixed_all = score_pairs_all(
+            specs=specs,
+            text_features=hidden_features.text_features,
+            text_mask=hidden_features.text_mask,
+            image_features=hidden_features.image_features,
+            query_indices=torch.cat([query_indices, query_indices]),
+            gallery_indices=torch.cat([best_positive, best_negative]),
+            device=device,
+            batch_size=pair_batch_size,
+            query_global=global_features.qfeats,
+            gallery_global=global_features.gfeats,
+        )
+        fixed_scores = {
+            name: (values[:num_queries], values[num_queries:])
+            for name, values in fixed_all.items()
+        }
+        logger.info("Fixed-pair sweep completed in %.1fs", time.perf_counter() - stage)
+    else:
+        logger.info("Skipping legacy fixed-pair/test grid in validation-selected mode")
 
     # The expensive local similarity tensor is also shared by all scorers here.
     stage = time.perf_counter()
@@ -334,7 +342,8 @@ def run_one(
 
     scorers_root = run_dir / "scorers"
     scorers_root.mkdir(parents=True, exist_ok=True)
-    for spec in specs:
+    legacy_specs = specs if legacy_test_sweep else []
+    for spec in legacy_specs:
         logger.info("Evaluating %s (%s)", spec.name, spec.kind)
         positive_scores, negative_scores = fixed_scores[spec.name]
         fixed = fixed_pair_summary(delta_global, positive_scores, negative_scores)
@@ -430,6 +439,75 @@ def run_one(
 
     summary_path = run_dir / "summary.csv"
     write_csv(summary_path, summary_rows)
+
+    validated_summary = None
+    if validated_enabled:
+        from validated import (
+            build_eval_split_loaders,
+            make_split_scores,
+            run_validated_suite,
+        )
+
+        logger.info("Starting validation-selected experiment suite")
+        stage = time.perf_counter()
+        val_img_loader, val_txt_loader = build_eval_split_loaders(repo_args, "val")
+        val_cache_meta = dict(cache_meta)
+        val_cache_meta["split"] = "val"
+        val_cache_path = cache_path.parent / "validation_features.pt"
+        val_global, val_hidden, val_cache_status = load_or_extract_features(
+            model=model,
+            device=device,
+            txt_loader=val_txt_loader,
+            img_loader=val_img_loader,
+            feature_dtype=feature_dtype,
+            cache_path=val_cache_path,
+            cache_meta=val_cache_meta,
+            use_cache=bool(config.get("cache_features", True)),
+            force=bool(config.get("force_recompute", False)),
+        )
+        logger.info(
+            "Validation features %s | queries=%d gallery=%d",
+            val_cache_status,
+            val_global.qids.numel(),
+            val_global.gids.numel(),
+        )
+        validation_state = make_split_scores(
+            name="validation",
+            global_features=val_global,
+            hidden_features=val_hidden,
+            specs=specs,
+            topk_values=topk_values,
+            device=device,
+            pair_batch_size=pair_batch_size,
+        )
+        test_state = make_split_scores(
+            name="test",
+            global_features=global_features,
+            hidden_features=hidden_features,
+            specs=specs,
+            topk_values=topk_values,
+            device=device,
+            pair_batch_size=pair_batch_size,
+            similarity=similarity,
+            rankings=global_rankings,
+            topk_indices=topk_indices,
+            global_topk_scores=global_topk_scores,
+            local_topk_scores=topk_all,
+        )
+        validated_summary = run_validated_suite(
+            config=config,
+            run_dir=run_dir,
+            specs=specs,
+            validation=validation_state,
+            test=test_state,
+            device=device,
+            pair_batch_size=pair_batch_size,
+            existing_test_rows=summary_rows,
+        )
+        logger.info(
+            "Validation-selected suite completed in %.1fs", time.perf_counter() - stage
+        )
+
     total_seconds = time.perf_counter() - started
     manifest = {
         "run_id": run_id,
@@ -464,8 +542,10 @@ def run_one(
             "log": str(run_dir / "run.log"),
             "summary_csv": str(summary_path),
             "scorers_dir": str(scorers_root),
+            "validated_dir": str(run_dir / "validated") if validated_summary else None,
         },
         "scorers": scorer_summaries,
+        "validated": validated_summary,
     }
     write_json(run_dir / "manifest.json", manifest)
     logger.info("All outputs written to %s", run_dir)
