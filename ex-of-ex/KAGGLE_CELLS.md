@@ -13,7 +13,7 @@ import os
 
 REPO = "/kaggle/working/probably-works"
 if not os.path.isdir(os.path.join(REPO, ".git")):
-    !git clone --branch diagnostic https://github.com/lqb464/probably-works.git "$REPO"
+    !git clone --branch diagnostic https://github.com/lqb464/probably-works.git "{REPO}"
 
 %cd {REPO}
 !git remote set-url origin https://github.com/lqb464/probably-works.git
@@ -51,8 +51,8 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
 
 !python ex-of-ex/run_experiments.py \
   --config ex-of-ex/configs/rstp_validated.yaml \
-  --root_dir "$ROOT" \
-  --checkpoint "$RSTP_GDOWN" \
+  --root_dir "{ROOT}" \
+  --checkpoint "{RSTP_GDOWN}" \
   --model-preset clip \
   --run-name rstp-gdown-validated
 ```
@@ -62,8 +62,8 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
 ```python
 !python ex-of-ex/run_experiments.py \
   --config ex-of-ex/configs/icfg_validated.yaml \
-  --root_dir "$ROOT" \
-  --checkpoint "$MODEL_DIR/icfg.pth" \
+  --root_dir "{ROOT}" \
+  --checkpoint "{MODEL_DIR}/icfg.pth" \
   --model-preset clip \
   --run-name icfg-validated
 ```
@@ -73,8 +73,8 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
 ```python
 !python ex-of-ex/run_experiments.py \
   --config ex-of-ex/configs/cuhk_validated.yaml \
-  --root_dir "$ROOT" \
-  --checkpoint "$MODEL_DIR/cuhk.pth" \
+  --root_dir "{ROOT}" \
+  --checkpoint "{MODEL_DIR}/cuhk.pth" \
   --model-preset clip \
   --run-name cuhk-validated
 ```
@@ -84,8 +84,8 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
 ```python
 !python ex-of-ex/run_experiments.py \
   --config ex-of-ex/configs/rstp_validated.yaml \
-  --root_dir "$ROOT" \
-  --checkpoint "$RSTP_BS256" \
+  --root_dir "{ROOT}" \
+  --checkpoint "{RSTP_BS256}" \
   --model-preset clip \
   --run-name rstp-bs256-validated
 ```
