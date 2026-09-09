@@ -16,6 +16,7 @@ if not os.path.isdir(os.path.join(REPO, ".git")):
     !git clone --branch diagnostic https://github.com/lqb464/probably-works.git "$REPO"
 
 %cd {REPO}
+!git remote set-url origin https://github.com/lqb464/probably-works.git
 !git checkout diagnostic
 !git pull --ff-only origin diagnostic
 !pip install -q -r requirements.txt
