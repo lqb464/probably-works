@@ -9,6 +9,8 @@ import torch.nn.functional as F
 
 
 HERE = Path(__file__).resolve().parent
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 

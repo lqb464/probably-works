@@ -24,7 +24,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from diagnostic.global_hidden_recovery.analysis import grouped_bootstrap_ci
+from uncertainty import grouped_bootstrap_ci
 from diagnostic.global_hidden_recovery.evaluator import compute_global_similarity
 from diagnostic.global_hidden_recovery.feature_extractor import GlobalFeatureSet, HiddenFeatureSet
 from evaluation import candidate_score_variants, metrics_from_rankings, positive_in_prefix
@@ -57,7 +57,7 @@ class OracleSetScores:
     negative_local_scores: Dict[str, torch.Tensor]
 
 
-def build_eval_split_loaders(repo_args, split: str):
+def build_eval_split_loaders(repo_args, split: str, allow_missing: bool = False):
     """Build deterministic val/test loaders without instantiating a train sampler."""
     from datasets.bases import ImageDataset, TextDataset
     from datasets.build import build_transforms
@@ -77,6 +77,17 @@ def build_eval_split_loaders(repo_args, split: str):
 
     dataset = factories[repo_args.dataset_name](root=repo_args.root_dir)
     records = getattr(dataset, split)
+    if not records["caption_pids"] or not records["image_pids"]:
+        if allow_missing and split == "val":
+            logging.getLogger("ex-of-ex.validated").warning(
+                "No official validation records for %s; using explicit v2 identity-holdout protocol",
+                repo_args.dataset_name,
+            )
+            return None, None
+        raise ValueError(
+            f"{repo_args.dataset_name} has no {split} records. Original diagnostic uses test only; "
+            "validated experiments need a development split. See METHODS_V2.md."
+        )
     transform = build_transforms(img_size=repo_args.img_size, is_train=False)
     image_set = ImageDataset(records["image_pids"], records["img_paths"], transform)
     text_set = TextDataset(
@@ -173,6 +184,10 @@ def run_validated_suite(
     pair_batch_size: int,
     existing_test_rows: Sequence[Mapping[str, object]],
 ) -> Dict[str, object]:
+    if int(dict(config.get("validated") or {}).get("protocol_version", 1)) == 2:
+        from protocol_v2 import run_suite_v2
+        return run_suite_v2(config, run_dir, specs, validation, test, device,
+                            pair_batch_size, existing_test_rows)
     logger = logging.getLogger("ex-of-ex.validated")
     cfg = dict(config.get("validated") or {})
     output_dir = run_dir / "validated"
@@ -200,7 +215,7 @@ def run_validated_suite(
     )
     test_oracle = build_oracle_set_scores(test, specs, max_negatives, device, pair_batch_size)
 
-    bootstrap_repetitions = int(cfg.get("bootstrap_repetitions", 300))
+    bootstrap_repetitions = int(cfg.get("bootstrap_repetitions", 2000))
     confidence = float(cfg.get("bootstrap_confidence", 0.95))
     seed = int(config.get("seed", 42))
     setwise_summary, setwise_queries = evaluate_setwise(
@@ -611,8 +626,8 @@ def evaluate_probes(
         )
         val_rng = np.random.default_rng(seed + 1000 + scorer_index)
         test_rng = np.random.default_rng(seed + 2000 + scorer_index)
-        permuted_val = val_rng.permutation(val_local) * val_base["orientation"]
-        permuted_test = test_rng.permutation(test_local) * test_base["orientation"]
+        permuted_val = val_rng.permutation(oriented_val_local)
+        permuted_test = test_rng.permutation(oriented_test_local)
         rows.append(
             fit_and_evaluate(
                 spec.name,
@@ -702,6 +717,12 @@ def evaluate_reranking(
     existing_test_rows: Sequence[Mapping[str, object]],
 ) -> tuple[list[dict], list[dict], list[dict]]:
     validation_rows = []
+    global_row = {
+        "selection_split": "validation", "scorer": "__global__", "kind": "global",
+        "k": 1, "mode": "noop", "fusion_weight": "",
+        **top1_variant_summary(validation, validation.global_topk_scores[:, :1], 1),
+    }
+    validation_rows.append(global_row)
     for spec, k, mode, weight, candidate_scores in iter_variants(
         validation, specs, topk_values, fusion_weights
     ):
@@ -718,7 +739,7 @@ def evaluate_reranking(
 
     selected = []
     for spec in specs:
-        candidates = [row for row in validation_rows if row["scorer"] == spec.name]
+        candidates = [row for row in validation_rows if row["scorer"] == spec.name] + [global_row]
         selected.append(max(candidates, key=rerank_selection_key))
     overall = max(validation_rows, key=rerank_selection_key)
     selected.append({**overall, "selected_as": "overall"})
@@ -913,6 +934,8 @@ def top1_variant_summary(split: SplitScores, candidate_scores: torch.Tensor, k: 
 
 
 def get_variant_scores(split: SplitScores, selected: Mapping[str, object]) -> torch.Tensor:
+    if selected["mode"] == "noop":
+        return split.global_topk_scores[:, :1]
     scorer = str(selected["scorer"])
     k = int(selected["k"])
     target_mode = str(selected["mode"])
@@ -948,7 +971,7 @@ def streaming_mixed_metrics(
         stop = min(start + batch_queries, num_queries)
         rankings = split.rankings[start:stop].clone()
         scores = candidate_scores[start:stop, :k]
-        order = torch.argsort(scores, dim=1, descending=True)
+        order = torch.argsort(scores, dim=1, descending=True, stable=True)
         reranked_prefix = rankings[:, :k].gather(1, order)
         local_gate = gate[start:stop]
         rankings[:, :k] = torch.where(
@@ -1010,9 +1033,9 @@ def rerank_selection_key(row: Mapping[str, object]):
 
 def gate_selection_key(row: Mapping[str, object]):
     return (
-        int(row["rescued"]),
         int(row["net_rescued"]),
         float(row["r1"]),
+        -int(row["harmed"]),
         -int(row["gated_queries"]),
     )
 
@@ -1062,7 +1085,7 @@ def json_safe(value):
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().tolist()
     if isinstance(value, np.generic):
-        return value.item()
+        return json_safe(value.item())
     if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
         return None
     return value

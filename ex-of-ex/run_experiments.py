@@ -450,36 +450,31 @@ def run_one(
 
         logger.info("Starting validation-selected experiment suite")
         stage = time.perf_counter()
-        val_img_loader, val_txt_loader = build_eval_split_loaders(repo_args, "val")
+        validated_cfg = dict(config.get("validated") or {})
+        allow_missing_val = (
+            int(validated_cfg.get("protocol_version", 1)) == 2
+            and validated_cfg.get("missing_validation") == "test_identity_holdout"
+        )
+        val_img_loader, val_txt_loader = build_eval_split_loaders(
+            repo_args, "val", allow_missing=allow_missing_val
+        )
         val_cache_meta = dict(cache_meta)
         val_cache_meta["split"] = "val"
         val_cache_path = cache_path.parent / "validation_features.pt"
-        val_global, val_hidden, val_cache_status = load_or_extract_features(
-            model=model,
-            device=device,
-            txt_loader=val_txt_loader,
-            img_loader=val_img_loader,
-            feature_dtype=feature_dtype,
-            cache_path=val_cache_path,
-            cache_meta=val_cache_meta,
-            use_cache=bool(config.get("cache_features", True)),
-            force=bool(config.get("force_recompute", False)),
-        )
-        logger.info(
-            "Validation features %s | queries=%d gallery=%d",
-            val_cache_status,
-            val_global.qids.numel(),
-            val_global.gids.numel(),
-        )
-        validation_state = make_split_scores(
-            name="validation",
-            global_features=val_global,
-            hidden_features=val_hidden,
-            specs=specs,
-            topk_values=topk_values,
-            device=device,
-            pair_batch_size=pair_batch_size,
-        )
+        validation_state = None
+        if val_img_loader is not None:
+            val_global, val_hidden, val_cache_status = load_or_extract_features(
+                model=model, device=device, txt_loader=val_txt_loader, img_loader=val_img_loader,
+                feature_dtype=feature_dtype, cache_path=val_cache_path, cache_meta=val_cache_meta,
+                use_cache=bool(config.get("cache_features", True)),
+                force=bool(config.get("force_recompute", False)),
+            )
+            logger.info("Validation features %s | queries=%d gallery=%d",
+                        val_cache_status, val_global.qids.numel(), val_global.gids.numel())
+            validation_state = make_split_scores(
+                name="validation", global_features=val_global, hidden_features=val_hidden,
+                specs=specs, topk_values=topk_values, device=device, pair_batch_size=pair_batch_size,
+            )
         test_state = make_split_scores(
             name="test",
             global_features=global_features,
@@ -542,7 +537,9 @@ def run_one(
             "log": str(run_dir / "run.log"),
             "summary_csv": str(summary_path),
             "scorers_dir": str(scorers_root),
-            "validated_dir": str(run_dir / "validated") if validated_summary else None,
+            "validated_dir": str(run_dir / ("validated_v2" if
+                int(dict(config.get("validated") or {}).get("protocol_version", 1)) == 2
+                else "validated")) if validated_summary else None,
         },
         "scorers": scorer_summaries,
         "validated": validated_summary,

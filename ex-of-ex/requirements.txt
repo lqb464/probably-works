@@ -1,0 +1,6 @@
+# Additional dependencies for the frozen experimental suite.
+# Install the repository requirements as well for CLIP feature extraction.
+numpy
+scipy
+scikit-learn
+pyyaml

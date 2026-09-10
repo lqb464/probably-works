@@ -1,8 +1,15 @@
-# Kaggle cells cho bốn thí nghiệm validation-selected
+# Kaggle cells cho bốn thí nghiệm validation-selected v2
 
 Mỗi cell chạy dataset/checkpoint dưới đây tự thực hiện cả setwise diagnostic,
 controlled probe, top-K reranking và selective gating. Không cần bốn cell riêng cho
 bốn loại thí nghiệm.
+
+Các config `*_validated.yaml` hiện dùng protocol v2, bootstrap 2.000 lần, CI 95%.
+Output mới nằm trong `validated_v2/`. Đọc `METHODS_V2.md` trước khi so với v1:
+ICFG có query-ID holdout riêng, không phải official full-test score. Phần chuẩn
+`diagnostic/global_hidden_recovery/run_diagnostic.py` vẫn chạy full test như cũ.
+
+Các cell cập nhật GitHub chỉ lấy được v2 sau khi các thay đổi local đã được publish.
 
 ## Cell 1 — cập nhật code và dependency
 
@@ -20,6 +27,9 @@ if not os.path.isdir(os.path.join(REPO, ".git")):
 !git checkout diagnostic
 !git pull --ff-only origin diagnostic
 !pip install -q -r requirements.txt
+!pip install -q -r ex-of-ex/requirements.txt
+!python ex-of-ex/tests.py
+!python ex-of-ex/tests_v2.py
 ```
 
 ## Cell 2 — khai báo đường dẫn và kiểm tra GPU
@@ -54,7 +64,7 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
   --root_dir "{ROOT}" \
   --checkpoint "{RSTP_GDOWN}" \
   --model-preset clip \
-  --run-name rstp-gdown-validated
+  --run-name rstp-gdown-validated-v2
 ```
 
 ## Cell 4 — ICFG
@@ -65,7 +75,7 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
   --root_dir "{ROOT}" \
   --checkpoint "{MODEL_DIR}/icfg.pth" \
   --model-preset clip \
-  --run-name icfg-validated
+  --run-name icfg-validated-v2
 ```
 
 ## Cell 5 — CUHK
@@ -76,7 +86,7 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
   --root_dir "{ROOT}" \
   --checkpoint "{MODEL_DIR}/cuhk.pth" \
   --model-preset clip \
-  --run-name cuhk-validated
+  --run-name cuhk-validated-v2
 ```
 
 ## Cell 6 — RSTP batch-size 256 checkpoint
@@ -87,7 +97,7 @@ assert os.path.isfile(RSTP_GDOWN), RSTP_GDOWN
   --root_dir "{ROOT}" \
   --checkpoint "{RSTP_BS256}" \
   --model-preset clip \
-  --run-name rstp-bs256-validated
+  --run-name rstp-bs256-validated-v2
 ```
 
 ## Cell 7 — gom và xem các kết quả chính
@@ -97,29 +107,30 @@ from pathlib import Path
 import pandas as pd
 
 output_root = Path("/kaggle/working/probably-works/ex-of-ex/outputs")
-for run in sorted(output_root.glob("*/*__*-validated")):
-    validated = run / "validated"
+for run in sorted(output_root.glob("*/*__*-validated-v2")):
+    validated = run / "validated_v2"
     print("\n===", run.name, "===")
+    if not (validated / "summary.json").is_file():
+        print("Chưa hoàn tất; xem", run / "run.log")
+        continue
 
     coverage = pd.read_csv(validated / "coverage.csv")
     print("\nCoverage ceiling")
     display(coverage)
 
     setwise = pd.read_csv(validated / "setwise_summary.csv")
-    print("\nBest setwise recovery, 10 hard negatives")
+    print("\nSetwise 10 hard negatives: đọc recovery VÀ harm, kèm paired CI")
     display(
         setwise[setwise.num_hard_negatives == 10]
-        .sort_values(["recovery_rate", "harm_rate"], ascending=[False, True])
-        .head(5)
     )
+    display(pd.read_csv(validated / "setwise_learned_summary.csv"))
 
     probes = pd.read_csv(validated / "probe_results.csv")
-    print("\nGlobal + hidden probes")
+    print("\nPrimary probe chọn trên selection, không chọn best test")
     display(
-        probes[probes.probe == "global_plus_hidden"]
-        .sort_values("roc_auc", ascending=False)
-        .head(5)
+        probes[probes.selected_on_validation.astype(str).str.lower() == "true"]
     )
+    display(pd.read_csv(validated / "probe_primary_comparisons.csv"))
 
     print("\nValidation-selected reranker on test")
     display(pd.read_csv(validated / "reranking_selected_test.csv"))
@@ -132,11 +143,59 @@ for run in sorted(output_root.glob("*/*__*-validated")):
 
 ```python
 %cd /kaggle/working/probably-works
-!zip -qr /kaggle/working/validated-results.zip ex-of-ex/outputs
-print("Download: /kaggle/working/validated-results.zip")
+!zip -qr /kaggle/working/validated-v2-results.zip ex-of-ex/outputs
+print("Download: /kaggle/working/validated-v2-results.zip")
 ```
 
 Feature cache nằm trong `ex-of-ex/cache/<dataset>/clip/<checkpoint-hash>/`.
 Nếu rerun cùng checkpoint và config, cả test lẫn validation features sẽ được load
 lại từ cache. Không dùng `--force-recompute` trừ khi checkpoint hoặc feature policy
 đã thay đổi.
+
+## Thay Cell 3–6 bằng một cell chạy lần lượt cả bốn checkpoint
+
+Chạy Cell 1–2 trước; giữ lại cell tải `rstp.pth` của notebook cũ. Cell này kiểm tra
+đường dẫn trước khi bắt đầu, chạy tiếp các job còn lại nếu một job lỗi, và báo lỗi
+ở cuối. Mỗi job tự ghi run.log + CSV/NPZ trong thư mục timestamp riêng.
+
+```python
+import subprocess
+from pathlib import Path
+
+jobs = [
+    ("rstp", "/kaggle/working/probably-works/rstp.pth", "rstp-gdown-validated-v2"),
+    ("icfg", f"{MODEL_DIR}/icfg.pth", "icfg-validated-v2"),
+    ("cuhk", f"{MODEL_DIR}/cuhk.pth", "cuhk-validated-v2"),
+    ("rstp", RSTP_BS256, "rstp-bs256-validated-v2"),
+]
+for _, checkpoint, _ in jobs:
+    assert Path(checkpoint).is_file(), checkpoint
+failed = []
+for dataset, checkpoint, name in jobs:
+    command = ["python", "ex-of-ex/run_experiments.py",
+        "--config", f"ex-of-ex/configs/{dataset}_validated.yaml",
+        "--root_dir", ROOT, "--checkpoint", checkpoint,
+        "--model-preset", "clip", "--run-name", name]
+    result = subprocess.run(command, cwd=REPO)
+    if result.returncode:
+        failed.append(name)
+assert not failed, f"Các run lỗi: {failed}; xem run.log của từng run."
+```
+
+## Chạy chỉ từ feature cache đã tải về
+
+Không cần checkpoint/dataset/download CLIP. Ví dụ RSTP-bs256, chạy tại repo root:
+
+```python
+!python ex-of-ex/run_cached_v2.py \
+  --config ex-of-ex/configs/rstp_validated.yaml \
+  --test-cache ex-of-ex/cache/rstp/clip/d91f1c96e76f/final_layer_features.pt \
+  --validation-cache ex-of-ex/cache/rstp/clip/d91f1c96e76f/validation_features.pt \
+  --device auto \
+  --run-name rstp-bs256-validated-v2
+```
+
+Đổi hash theo cache checkpoint thực tế. ICFG bỏ `--validation-cache`; config ICFG
+đã khai báo `missing_validation: test_identity_holdout`. CPU chạy được nhưng tính
+local scorer có thể lâu hơn GPU đáng kể. NPZ trong output lưu dự đoán để tính lại
+CI; không phải feature cache và không truyền vào `--test-cache`.

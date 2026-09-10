@@ -16,6 +16,12 @@ topk: [10, 20, 50]
 fusion_weights: [0.1, 0.2, 0.3, 0.5]
 
 validated:
+  protocol_version: 2
+  missing_validation: test_identity_holdout
+  holdout_development_fraction: 0.2
+  development_fractions: [0.5, 0.25, 0.25]
+  probe_c_grid: [0.1, 1.0, 10.0]
+  calibration_delta: 0.05
   enabled: true
   legacy_test_sweep: false
   setwise_negative_counts: [1, 5, 10]
@@ -24,7 +30,7 @@ validated:
   probe_regularization_c: 1.0
   gating_harm_budgets: [0.01, 0.02, 0.05]
   gating_threshold_steps: 41
-  bootstrap_repetitions: 300
+  bootstrap_repetitions: 2000
   bootstrap_confidence: 0.95
 
 scorers:

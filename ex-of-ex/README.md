@@ -126,9 +126,16 @@ Muốn tái tạo đúng thí nghiệm P–W1 cũ thì tiếp tục dùng các c
 mọi top-K reranker đều không thể cứu query đó. `summary.json` ghi protocol và đường
 dẫn của toàn bộ output. Log của bốn phép thử dùng chung `run.log` của run để truy vết.
 
-Các config `*_validated.yaml` mặc định dùng 300 identity-bootstrap repetitions để giữ
-thời gian vừa phải. Khi làm bảng cuối cho paper, tăng
-`validated.bootstrap_repetitions` lên 2000 và giữ nguyên mọi hyperparameter khác.
+Các config `*_validated.yaml` mặc định dùng protocol v2 và 2000 identity-bootstrap
+repetitions, confidence level 95%. V2 sửa permutation control, bổ sung linear
+RankNet/isotonic control, chọn no-op khi phù hợp, tách fit/selection/calibration,
+và thêm paired CI cho cả bốn experiment. Output mới ở `validated_v2/`; các tên file
+ở trên mô tả v1. Thay đổi code không cập nhật output đã chạy trước đó.
+
+Đọc [METHODS_V2.md](METHODS_V2.md) để xem nguồn paper, giới hạn kiểm soát harm,
+đơn vị metric, protocol ICFG và danh sách file. Bản gốc ICFG chỉ dùng test; lỗi
+validation rỗng trước đây đến từ phần mở rộng validated yêu cầu val vô điều kiện.
+V2 ICFG dùng explicit query-ID holdout nên không so trực tiếp với official test.
 
 Các cell Kaggle hoàn chỉnh nằm trong `KAGGLE_CELLS.md`.
 
