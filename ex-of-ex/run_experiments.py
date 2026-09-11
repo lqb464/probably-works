@@ -102,6 +102,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-recompute", action="store_true", help="Ignore feature cache")
     parser.add_argument("--no-cache", action="store_true", help="Do not read/write feature cache")
     parser.add_argument("--seed", type=int, default=None)
+    full_mode = parser.add_mutually_exclusive_group()
+    full_mode.add_argument("--full-gallery-only", action="store_true", help="Run additive full-gallery suite instead of repeating v2")
+    full_mode.add_argument("--with-full-gallery", action="store_true", help="Run existing suite AND full-gallery experiments in the same run")
+    parser.add_argument("--save-full-similarity", action="store_true", help="Save full-gallery float32 similarity matrices (large files)")
     return parser.parse_args()
 
 
@@ -245,6 +249,12 @@ def run_one(
         hidden_features.text_features.shape[1],
         hidden_features.image_features.shape[1],
     )
+
+    if config.get("full_gallery_only", False):
+        from full_gallery import run_addon
+        return run_addon(config, run_dir, model, device, repo_args, global_features,
+                         hidden_features, test_txt_loader, test_img_loader,
+                         cache_path, cache_meta)
 
     similarity = compute_global_similarity(global_features.qfeats, global_features.gfeats)
     global_rankings = torch.argsort(similarity, dim=1, descending=True).cpu()
@@ -441,6 +451,7 @@ def run_one(
     write_csv(summary_path, summary_rows)
 
     validated_summary = None
+    prepared_validation = None
     if validated_enabled:
         from validated import (
             build_eval_split_loaders,
@@ -475,6 +486,7 @@ def run_one(
                 name="validation", global_features=val_global, hidden_features=val_hidden,
                 specs=specs, topk_values=topk_values, device=device, pair_batch_size=pair_batch_size,
             )
+            prepared_validation = (val_global, val_hidden)
         test_state = make_split_scores(
             name="test",
             global_features=global_features,
@@ -502,6 +514,14 @@ def run_one(
         logger.info(
             "Validation-selected suite completed in %.1fs", time.perf_counter() - stage
         )
+
+    full_gallery_summary = None
+    if config.get("with_full_gallery", False):
+        from full_gallery import run_addon
+        full_gallery_summary = run_addon(
+            config, run_dir, model, device, repo_args, global_features, hidden_features,
+            test_txt_loader, test_img_loader, cache_path, cache_meta,
+            prepared_validation=prepared_validation)
 
     total_seconds = time.perf_counter() - started
     manifest = {
@@ -534,6 +554,7 @@ def run_one(
         "timing_seconds": {"topk_scorer_fanout": scoring_seconds, "total": total_seconds},
         "citations": CITATIONS,
         "outputs": {
+            "full_gallery_summary": str(full_gallery_summary) if full_gallery_summary else None,
             "log": str(run_dir / "run.log"),
             "summary_csv": str(summary_path),
             "scorers_dir": str(scorers_root),
@@ -671,6 +692,9 @@ def apply_overrides(config: Mapping[str, object], cli: argparse.Namespace) -> Di
         config["force_recompute"] = True
     if cli.no_cache:
         config["cache_features"] = False
+    config["full_gallery_only"] = getattr(cli, "full_gallery_only", False)
+    config["with_full_gallery"] = getattr(cli, "with_full_gallery", False)
+    config["save_full_similarity"] = getattr(cli, "save_full_similarity", False)
     return config
 
 
