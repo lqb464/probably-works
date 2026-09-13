@@ -1,0 +1,10 @@
+# Keep Kaggle's matching torch/torchvision CUDA builds; do not upgrade them.
+tqdm
+ftfy
+regex
+prettytable
+easydict
+pyyaml
+pillow
+pandas
+matplotlib
