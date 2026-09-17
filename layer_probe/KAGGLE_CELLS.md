@@ -1,6 +1,6 @@
 # Kaggle cells — hai notebook text và image
 
-Dùng cùng sáu cell dưới đây. Notebook text đặt `MODALITY = "text"`; notebook image đặt `MODALITY = "image"`. Các file `.ipynb` đã tách sẵn. Bật Internet, attach benchmark và checkpoint datasets, chọn GPU T4 x2.
+Dùng cùng tám cell dưới đây. Notebook text đặt `MODALITY = "text"`; notebook image đặt `MODALITY = "image"`. Các file `.ipynb` đã tách sẵn. Bật Internet, attach benchmark và checkpoint datasets, chọn GPU T4 x2.
 
 ## Cell 1
 
@@ -122,7 +122,27 @@ for dataset in CHECKPOINTS:
     del cache
 ```
 
-## Cell 6
+## Cell 6 — paper-style correctness/error probe
+
+```python
+# Probe dự đoán global top-1 hiện tại có đúng không.
+# Nếu bị cảnh báo, chỉ rerank global top-k bằng hidden layer đã chọn.
+for dataset in CHECKPOINTS:
+    folder = OUT / dataset
+    subprocess.run([
+        sys.executable, "layer_probe/error_probe.py",
+        "--run-dir", str(folder), "--modality", MODALITY,
+        "--topk", "50", "--harm-budget", "0.05",
+    ], check=True)
+```
+
+Đọc `paper_error_probe/probe_results.csv` (AUC/log-loss của probe và
+permutation control) cùng `paper_error_probe/selective_correction.json`
+(số lỗi được cứu và số dự đoán đúng bị làm hỏng). Đây là bước tương tự
+“error detector + selective correction” của paper, nhưng CLIP không sinh token
+nên correction ở đây là kích hoạt hidden reranker, không phải re-prompt.
+
+## Cell 7 — archive kết quả (chạy sau Cell 6)
 
 ```python
 # Archive gọn: bỏ pooled feature caches; adapters, metrics, IDs, plots và logs vẫn giữ.
@@ -137,7 +157,7 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
 display(FileLink(str(archive)))
 ```
 
-## Cell 7 — kiểm tra bằng chứng hidden information
+## Cell 8 — kiểm tra bằng chứng hidden information
 
 ```python
 # So sánh paired theo từng query: probe thật vs permutation null,

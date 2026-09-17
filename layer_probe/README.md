@@ -34,6 +34,34 @@ với CLIP pretrained gốc; kết luận phải ghi đúng checkpoint.
   trong `test_results.json`. Nếu probe thật không vượt rõ control này thì chưa
   có bằng chứng hidden feature mang tín hiệu retrieval/identity.
 
+## Paper-style error detector cho CLIP
+
+Paper arXiv:2507.12379 không chỉ hỏi hidden state có decode được nhãn hay
+không; họ còn dùng probe để dự đoán output hiện tại có sai, rồi chỉ re-prompt
+những bước đáng ngờ. CLIP không sinh token và không có prompt correction, nên
+`layer_probe/error_probe.py` chuyển nguyên ý tưởng đó thành selective retrieval:
+
+1. Coi global CLS/EOS retrieval top-1 là “câu trả lời hiện tại”.
+2. Dùng hidden activation ở layer đã chọn, cùng global/hidden score margin, để
+   train logistic correctness probe với nhãn `top-1 đúng/sai` trên FIT.
+3. Chọn ngưỡng cảnh báo trên SELECT, rồi chỉ rerank top-k bằng hidden adapter
+   khi probe dự đoán global top-1 có nguy cơ sai.
+4. Đánh giá TEST một lần, kèm `permuted_hidden_control` để biết probe có thực
+   sự dùng pairing hidden–query/candidate hay chỉ đọc confidence của global.
+
+Chạy sau `run.py`/Cell 3:
+
+```bash
+python layer_probe/error_probe.py --run-dir /path/to/layer-results/text-.../rstp \
+  --modality text --topk 50 --harm-budget 0.05
+```
+
+Kết quả nằm trong `paper_error_probe/`: `probe_results.csv` báo AUC/log-loss
+so với global-only và permutation control; `selective_correction.json` báo
+baseline R@1, hidden rerank R@1, số query được cứu và số query đúng bị làm hỏng.
+Đây là bằng chứng probe dự báo lỗi và hữu ích cho gating; nó không tự chứng
+minh hidden activation gây ra quyết định (causal intervention).
+
 Single-layer, average và mix có cùng kích thước linear head trong mỗi encoder;
 mix thêm L scalar. Text và image có hidden width khác nhau nên không so capacity
 chéo encoder như thể bằng nhau. Mean pooling có thể mất thông tin cục bộ;
