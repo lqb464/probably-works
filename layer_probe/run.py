@@ -145,10 +145,16 @@ def main():
     p.add_argument("--mix-seeds", type=int, nargs="+", default=[42, 43, 44])
     p.add_argument("--penalties", type=float, nargs="+", default=[.0001, .001, .01])
     p.add_argument("--mix-steps", type=int, default=300)
+    p.add_argument("--permutation-seed", type=int, default=2025,
+                   help="Seed for the FIT-only hidden-row permutation null control")
+    p.add_argument("--control-penalty", type=float, default=.001,
+                   help="Ridge penalty for the permutation null control")
     p.add_argument("--allow-test-holdout", action="store_true")
     args = p.parse_args()
     if any(x <= 0 for x in args.penalties):
         p.error("penalties must be positive")
+    if args.control_penalty <= 0:
+        p.error("control-penalty must be positive")
     torch.set_num_threads(4)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
@@ -243,6 +249,31 @@ def main():
         fusion_rows.append(grid[-1])
     chosen["fusion_hidden"] = best(fusion_rows)
     chosen["overall"] = best(grid)
+
+    # Null control: break the FIT pairing between hidden representations and
+    # identity-balanced opposite-modality targets.  The layer, penalty and
+    # selection split are fixed from the real probe; this control is not
+    # eligible for model selection and is reported separately.
+    hidden_key = hidden_spec["keys"][0]
+    rng = np.random.default_rng(args.permutation_seed)
+    permutation = torch.from_numpy(rng.permutation(len(fit[hidden_key]))).long()
+    permuted_x = normalize(fit[hidden_key][permutation])
+    permuted_weight = ridge(permuted_x, y, fit["ids"], args.control_penalty)
+    control_name = "permuted_hidden_control"
+    weights[control_name] = permuted_weight
+    permuted_selection = normalize(selection[hidden_key]) @ permuted_weight
+    control_selection_rows = metrics(evaluate(permuted_selection, "select"))
+    control_spec = {"kind": "ridge", "keys": [hidden_key], "weight": control_name,
+                    "penalty": args.control_penalty, "permutation_seed": args.permutation_seed}
+    save_json(out / "permutation_control.json", {
+        "name": control_name,
+        "hidden_key": hidden_key,
+        "spec": control_spec,
+        "selection_metrics": control_selection_rows,
+        "permutation_seed": args.permutation_seed,
+        "control_penalty": args.control_penalty,
+        "interpretation": "FIT hidden rows were permuted before fitting; this is a decodability null, not a causal intervention."
+    })
     # Include fusion dependencies for deployment without rerunning selection.
     chosen["ridge_hidden"] = hidden_name
     with (out / "validation_grid.csv").open("w", newline="") as f:
@@ -270,6 +301,13 @@ def main():
         rows = evaluate(pred, "test")
         np.save(out / f"queries_{name}.npy", rows.numpy())
         results.append({"name": name, **metrics(rows), "delta_vs_baseline_ci95": paired_ci(rows, baseline, features["test"]["text"]["ids"])})
+    # Evaluate the pre-registered null control on TEST without refitting or
+    # selecting on TEST.  It is intentionally absent from `chosen`.
+    permuted_test = normalize(test[hidden_key]) @ weights[control_name]
+    control_rows = evaluate(permuted_test, "test")
+    np.save(out / f"queries_{control_name}.npy", control_rows.numpy())
+    results.append({"name": control_name, **metrics(control_rows),
+                    "delta_vs_baseline_ci95": paired_ci(control_rows, baseline, features["test"]["text"]["ids"])})
     save_json(out / "test_results.json", results)
     print(json.dumps(results, indent=2), flush=True)
 

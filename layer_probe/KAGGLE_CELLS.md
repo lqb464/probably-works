@@ -53,7 +53,7 @@ jobs = []
 for dataset, checkpoint in CHECKPOINTS.items():
     job = ["--modality", MODALITY, "--dataset", dataset, "--root", ROOT,
            "--checkpoint", checkpoint, "--output", str(OUT / dataset),
-           "--batch-size", "32", "--workers", "2",
+           "--batch-size", "64", "--workers", "2",
            "--image-size", "384", "128", "--mix-seeds", "42", "43", "44"]
     if dataset == "icfg":
         job += ["--allow-test-holdout"]
@@ -136,3 +136,40 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(path, path.relative_to(OUT.parent))
 display(FileLink(str(archive)))
 ```
+
+## Cell 7 — kiểm tra bằng chứng hidden information
+
+```python
+# So sánh paired theo từng query: probe thật vs permutation null,
+# và best intermediate hidden vs final hidden.
+import numpy as np, json
+from layer_probe.core import paired_ci
+
+for dataset in CHECKPOINTS:
+    folder = OUT / dataset
+    chosen = json.loads((folder / "selection.json").read_text())["chosen"]
+    cache = torch.load(folder / "test_features.pt", map_location="cpu", weights_only=True)
+    qids = cache["text"]["ids"]
+
+    real_name = chosen["ridge_hidden"]
+    real = torch.from_numpy(np.load(folder / f"queries_{real_name}.npy"))
+    null = torch.from_numpy(np.load(folder / "queries_permuted_hidden_control.npy"))
+    final = torch.from_numpy(np.load(folder / f"queries_{chosen['ridge_final_hidden']}.npy"))
+
+    report = {
+        "dataset": dataset,
+        "real_hidden": real_name,
+        "vs_permuted_null": paired_ci(real, null, qids),
+        "vs_final_hidden": paired_ci(real, final, qids),
+        "mean_delta_r1_vs_null": float((real[:, 0] - null[:, 0]).mean()),
+        "mean_delta_r1_vs_final": float((real[:, 0] - final[:, 0]).mean()),
+    }
+    (folder / "hidden_evidence_ci.json").write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    del cache
+```
+
+Đọc kết quả như sau: real hidden phải thắng permutation null trên test; nếu
+muốn nói intermediate có ích hơn final thì so thêm `vs_final_hidden`. Đây là
+bằng chứng decodability/retrieval trên checkpoint và protocol đã chọn, chưa
+phải causal proof.

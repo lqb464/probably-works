@@ -28,6 +28,11 @@ với CLIP pretrained gốc; kết luận phải ghi đúng checkpoint.
   selection nên kết quả test không phải mean±std của 3 seeds.
 - `fusion_hidden_*`: trộn baseline global với best hidden ridge embedding;
   beta thuộc 0, .25, .5, .75, 1 chọn trên selection, bao gồm no-op.
+- `permuted_hidden_control`: null control cố định layer/penalty từ probe thật,
+  nhưng hoán vị các hàng hidden ở FIT trước khi fit adapter. Nó không được phép
+  thắng trong bước chọn model; xem `permutation_control.json` và dòng cùng tên
+  trong `test_results.json`. Nếu probe thật không vượt rõ control này thì chưa
+  có bằng chứng hidden feature mang tín hiệu retrieval/identity.
 
 Single-layer, average và mix có cùng kích thước linear head trong mỗi encoder;
 mix thêm L scalar. Text và image có hidden width khác nhau nên không so capacity
@@ -75,13 +80,18 @@ lệch intermediate–final hãy bootstrap hiệu giữa hai file queries tươn
 Nếu fusion thắng baseline mới có bằng chứng hữu ích cho việc bổ sung global.
 Đây vẫn là bằng chứng trong dataset/task/checkpoint và loại probe đã thử.
 
+Permutation control chỉ kiểm tra **decodability** với adapter tuyến tính; nó
+không chứng minh tính nhân quả của hidden state. Muốn nói causal cần thêm
+activation ablation/patching hoặc intervention và một evaluation riêng.
+
 ## Kaggle T4 16GB × 2
 
 Mỗi process dùng một T4; launcher chạy tối đa hai dataset/checkpoint độc lập
 cùng lúc và truyền `CUDA_VISIBLE_DEVICES`. Hai GPU không cộng thành 32GB cho
 một model. AMP FP16 cho encode, ridge CPU FP64, mix FP32 trên GPU.
-Batch encode mặc định 32; nếu OOM giảm còn 16. Chỉ chạy một dataset thì một GPU
-được dùng. Notebook text và image nên là hai Kaggle sessions riêng.
+Cell Kaggle dùng batch 64 làm điểm bắt đầu; nếu OOM giảm còn 32 hoặc 16. Chỉ chạy
+một dataset thì một GPU được dùng. Notebook text và image nên là hai Kaggle
+sessions riêng.
 
 Checkpoint load strict, không download pretrained hoặc fallback weights.
 Hỗ trợ ViT CLIP đúng architecture repo; image size/stride phải khớp checkpoint.

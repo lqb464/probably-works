@@ -89,6 +89,8 @@ class Numerics(unittest.TestCase):
                     run.main()
                 results = json.loads((destination / "test_results.json").read_text())
                 self.assertTrue(all(0 <= r["r1"] <= 1 for r in results))
+                self.assertIn("permuted_hidden_control", {r["name"] for r in results})
+                self.assertTrue((destination / "permutation_control.json").exists())
                 self.assertTrue((destination / "selection.json").exists())
 
 
