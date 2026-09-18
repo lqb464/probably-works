@@ -76,10 +76,13 @@ class Numerics(unittest.TestCase):
                                     caption_pids=ids, captions=["red shirt", "blue coat", "black pants", "white hat"])
             for modality in ("text", "image"):
                 args = Namespace(checkpoint=str(checkpoint), image_size=[32, 16], stride=16,
-                                 device="cpu", modality=modality, batch_size=2, workers=0)
+                                 device="cpu", modality=modality, batch_size=2, workers=0,
+                                 topk_attention_fraction=.25)
                 loaded = run.load_clip(args)
                 feats = run.extract(loaded, splits["fit"], args)
                 self.assertEqual(feats[modality]["hidden_1"].shape, (4, 64))
+                for pool in ("hidden_raw", "hidden_attention", "hidden_topk_attention", "hidden_median"):
+                    self.assertEqual(feats[modality][f"{pool}_1"].shape, (4, 64))
                 self.assertFalse(any(p.requires_grad for p in loaded.parameters()))
                 destination = root / modality
                 argv = ["run", "--modality", modality, "--root", tmp, "--checkpoint", str(checkpoint),

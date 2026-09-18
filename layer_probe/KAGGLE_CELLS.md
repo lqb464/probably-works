@@ -54,7 +54,8 @@ for dataset, checkpoint in CHECKPOINTS.items():
     job = ["--modality", MODALITY, "--dataset", dataset, "--root", ROOT,
            "--checkpoint", checkpoint, "--output", str(OUT / dataset),
            "--batch-size", "64", "--workers", "2",
-           "--image-size", "384", "128", "--mix-seeds", "42", "43", "44"]
+           "--image-size", "384", "128", "--mix-seeds", "42", "43", "44",
+           "--topk-attention-fraction", "0.25"]
     if dataset == "icfg":
         job += ["--allow-test-holdout"]
     jobs.append(job)
@@ -99,6 +100,14 @@ for dataset in CHECKPOINTS:
     fig.savefig(folder / "validation_layers.png", dpi=160)
     plt.show()
 ```
+
+Các method pooling mới xuất hiện trong `validation_grid.csv` với tên:
+`ridge_hidden_raw_*`, `ridge_hidden_attention_*`,
+`ridge_hidden_topk_attention_*`, và `ridge_hidden_median_*`. Trong đó
+`hidden_attention` dùng attention readout đã học sẵn trong backbone (EOS query
+cho text, CLS query cho image), còn `hidden_topk_attention` giữ 25% vị trí có
+attention cao nhất. Đây là attention của CLIP, chưa phải một pooling head mới
+được supervised train.
 
 ## Cell 5
 

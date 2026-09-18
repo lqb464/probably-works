@@ -181,7 +181,9 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
 
     selection = read_json(args.run_dir / "selection.json")
-    hidden_name = selection["chosen"]["ridge_hidden"]
+    hidden_name = selection["chosen"].get(
+        "ridge_hidden_best_pool", selection["chosen"]["ridge_hidden"]
+    )
     hidden_key = selection["specs"][hidden_name]["keys"][0]
     weight_name = selection["specs"][hidden_name]["weight"]
     weights = load_pt(args.run_dir / "adapters.pt")

@@ -3,6 +3,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -74,6 +75,55 @@ def dataset_and_splits(args):
     return splits, protocol
 
 
+def hidden_pool_variants(x, modality, tokens, attention, topk_fraction=.25):
+    """Pool token/patch residuals without adding a supervised backbone head.
+
+    ``hidden`` is the historical baseline: LayerNorm every token/patch, then
+    mean. ``hidden_raw`` pools first and normalizes after pooling. The
+    attention variants reuse the backbone's learned readout attention (EOS for
+    text, CLS for image). ``hidden_median`` is a coordinate-wise robust pool.
+    """
+    x = x.float()
+    normalized = F.layer_norm(x, (x.shape[-1],))
+    batch, length, _ = x.shape
+    mask = torch.zeros(batch, length, dtype=torch.bool, device=x.device)
+    if modality == "text":
+        eos = tokens.argmax(-1)
+        positions = torch.arange(length, device=x.device)[None]
+        mask = (positions > 0) & (positions < eos[:, None])
+        readout = attention[torch.arange(batch, device=x.device), eos].float()
+    else:
+        mask[:, 1:] = True
+        readout = attention[:, 0].float()
+        readout[:, 0] = 0
+    counts = mask.sum(1).clamp_min(1).to(x.dtype)
+    mask_f = mask.to(x.dtype)[..., None]
+
+    raw_mean = (x * mask_f).sum(1) / counts[:, None]
+    current_mean = (normalized * mask_f).sum(1) / counts[:, None]
+    median = torch.stack([
+        normalized[i, mask[i]].median(0).values for i in range(batch)
+    ])
+
+    weights = readout.masked_fill(~mask, 0)
+    weights = weights / weights.sum(1, keepdim=True).clamp_min(1e-8)
+    attention_mean = (x * weights[..., None]).sum(1)
+
+    k = max(1, int(math.ceil(length * topk_fraction)))
+    top_positions = readout.masked_fill(~mask, float("-inf")).topk(k, dim=1).indices
+    top_mask = torch.zeros_like(mask).scatter(1, top_positions, True) & mask
+    top_weights = readout.masked_fill(~top_mask, 0)
+    top_weights = top_weights / top_weights.sum(1, keepdim=True).clamp_min(1e-8)
+    top_attention = (x * top_weights[..., None]).sum(1)
+    return {
+        "hidden": current_mean,
+        "hidden_raw": raw_mean,
+        "hidden_attention": attention_mean,
+        "hidden_topk_attention": top_attention,
+        "hidden_median": median,
+    }
+
+
 def extract(model, data, args):
     from datasets.bases import ImageDataset, TextDataset
     from datasets.build import build_transforms
@@ -88,10 +138,14 @@ def extract(model, data, args):
         def hook(index):
             def capture(module, inputs, outputs):
                 x = outputs[0].permute(1, 0, 2).float()
-                # Same non-learned per-token LayerNorm at every layer, then pooling.
-                ng, nh = pool_tokens(F.layer_norm(x, (x.shape[-1],)), modality, tokens)
+                attention = outputs[1].float()
+                # Global is the readout token: EOS for text, CLS for image.
+                ng, _ = pool_tokens(F.layer_norm(x, (x.shape[-1],)), modality, tokens)
                 captured[f"global_{index}"] = normalize(ng).cpu().half()
-                captured[f"hidden_{index}"] = normalize(nh).cpu().half()
+                pools = hidden_pool_variants(x, modality, tokens, attention,
+                                             args.topk_attention_fraction)
+                for name, value in pools.items():
+                    captured[f"{name}_{index}"] = normalize(value).cpu().half()
                 # Applying the final head at intermediate layers measures alignment only.
                 ln = model.ln_final if modality == "text" else model.visual.ln_post
                 proj = model.text_projection if modality == "text" else model.visual.proj
@@ -145,6 +199,8 @@ def main():
     p.add_argument("--mix-seeds", type=int, nargs="+", default=[42, 43, 44])
     p.add_argument("--penalties", type=float, nargs="+", default=[.0001, .001, .01])
     p.add_argument("--mix-steps", type=int, default=300)
+    p.add_argument("--topk-attention-fraction", type=float, default=.25,
+                   help="Fraction of valid token/patch positions kept by top-k attention pooling")
     p.add_argument("--permutation-seed", type=int, default=2025,
                    help="Seed for the FIT-only hidden-row permutation null control")
     p.add_argument("--control-penalty", type=float, default=.001,
@@ -155,6 +211,8 @@ def main():
         p.error("penalties must be positive")
     if args.control_penalty <= 0:
         p.error("control-penalty must be positive")
+    if not 0 < args.topk_attention_fraction <= 1:
+        p.error("topk-attention-fraction must be in (0, 1]")
     torch.set_num_threads(4)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
@@ -180,7 +238,7 @@ def main():
     selection = features["select"][own]
     y = targets(fit["ids"], features["fit"][other]["baseline"].float(), features["fit"][other]["ids"])
     grid, candidates, weights = [], {}, {}
-    layers = sorted(int(k.split('_')[-1]) for k in fit if k.startswith("hidden_"))
+    layers = sorted(int(k.split('_')[-1]) for k in fit if k.startswith("global_"))
     def record(name, pred, spec):
         row = {"name": name, **metrics(evaluate(pred, "select"))}
         grid.append(row)
@@ -229,6 +287,20 @@ def main():
             record(name, normalize((xs * a[None, :, None]).sum(1)) @ weights[name],
                    {"kind": "ridge", "keys": keys, "weight": name, "alpha": a.tolist()})
             del x, target, optimizer, w, alpha
+    # New pooling variants are evaluated layer-by-layer with the same ridge
+    # capacity. We intentionally do not add extra average/mix families here:
+    # first test whether token/patch selection helps before adding capacity.
+    pooled_hidden_pools = ("hidden_raw", "hidden_attention",
+                           "hidden_topk_attention", "hidden_median")
+    for pool in pooled_hidden_pools:
+        for layer in layers:
+            key = f"{pool}_{layer}"
+            for penalty in args.penalties:
+                name = f"ridge_{key}_{penalty}"
+                w = ridge(normalize(fit[key]), y, fit["ids"], penalty)
+                weights[name] = w
+                record(name, normalize(selection[key]) @ w,
+                       {"kind": "ridge", "keys": [key], "weight": name})
     best = lambda rows: max(rows, key=lambda r: (r["r1"], r["map"]))["name"]
     # Fixed families; no test-based choice. Baseline is always an eligible no-op.
     chosen = {"overall": best(grid), "baseline": "baseline"}
@@ -237,6 +309,11 @@ def main():
             rows = [r for r in grid if r["name"].startswith(f"{family}_{pool}_")]
             chosen[f"{family}_{pool}"] = best(rows)
         chosen[f"ridge_final_{pool}"] = best([r for r in grid if r["name"].startswith(f"ridge_{pool}_{layers[-1]}_")])
+    for pool in pooled_hidden_pools:
+        rows = [r for r in grid if r["name"].startswith(f"ridge_{pool}_")]
+        chosen[f"ridge_{pool}"] = best(rows)
+    hidden_pool_names = [chosen["ridge_hidden"]] + [chosen[f"ridge_{p}"] for p in pooled_hidden_pools]
+    chosen["ridge_hidden_best_pool"] = best([r for r in grid if r["name"] in hidden_pool_names])
     # Test whether hidden information complements the original global embedding.
     hidden_name = chosen["ridge_hidden"]
     hidden_spec = candidates[hidden_name]
@@ -248,12 +325,26 @@ def main():
         record(name, pred, {"kind": "fusion", "source": hidden_name, "beta": beta})
         fusion_rows.append(grid[-1])
     chosen["fusion_hidden"] = best(fusion_rows)
+
+    # Repeat the fusion check with the best of the new pooling variants.
+    best_hidden_name = chosen["ridge_hidden_best_pool"]
+    best_hidden_spec = candidates[best_hidden_name]
+    best_hidden_pred = normalize(normalize(selection[best_hidden_spec["keys"][0]]) @ weights[best_hidden_name])
+    best_fusion_rows = []
+    for beta in (0., .25, .5, .75, 1.):
+        name = f"fusion_hidden_best_pool_beta{beta}"
+        pred = (1 - beta) * normalize(selection["baseline"]) + beta * best_hidden_pred
+        record(name, pred, {"kind": "fusion", "source": best_hidden_name, "beta": beta})
+        best_fusion_rows.append(grid[-1])
+    chosen["fusion_hidden_best_pool"] = best(best_fusion_rows)
     chosen["overall"] = best(grid)
 
     # Null control: break the FIT pairing between hidden representations and
     # identity-balanced opposite-modality targets.  The layer, penalty and
     # selection split are fixed from the real probe; this control is not
     # eligible for model selection and is reported separately.
+    hidden_name = best_hidden_name
+    hidden_spec = best_hidden_spec
     hidden_key = hidden_spec["keys"][0]
     rng = np.random.default_rng(args.permutation_seed)
     permutation = torch.from_numpy(rng.permutation(len(fit[hidden_key]))).long()
@@ -275,7 +366,6 @@ def main():
         "interpretation": "FIT hidden rows were permuted before fitting; this is a decodability null, not a causal intervention."
     })
     # Include fusion dependencies for deployment without rerunning selection.
-    chosen["ridge_hidden"] = hidden_name
     with (out / "validation_grid.csv").open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(grid[0])); writer.writeheader(); writer.writerows(grid)
     save_json(out / "selection.json", {"chosen": chosen, "specs": {n: candidates[n] for n in set(chosen.values())}})

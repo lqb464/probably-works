@@ -34,6 +34,24 @@ với CLIP pretrained gốc; kết luận phải ghi đúng checkpoint.
   trong `test_results.json`. Nếu probe thật không vượt rõ control này thì chưa
   có bằng chứng hidden feature mang tín hiệu retrieval/identity.
 
+### Pooling variants mới
+
+Ngoài `hidden_l` cũ (LayerNorm từng token/patch rồi mean), pipeline còn quét:
+
+- `hidden_raw_l`: mean residual token/patch trước, sau đó mới normalize.
+- `hidden_attention_l`: attention-weighted pool dùng readout attention đã học
+  sẵn trong backbone; EOS làm query cho text và CLS làm query cho image.
+- `hidden_topk_attention_l`: chỉ giữ 25% token/patch có readout attention cao
+  nhất rồi weighted-pool.
+- `hidden_median_l`: median theo từng chiều của các token/patch đã LayerNorm,
+  nhằm giảm ảnh hưởng outlier/background.
+
+Các biến thể mới chỉ được đánh giá bằng ridge theo từng layer để giữ capacity
+đơn giản. Chúng được chọn trên SELECT, không chọn theo TEST. `hidden_attention`
+ở đây là attention của backbone, không phải một attention pooling head mới được
+supervised train; đó là một baseline an toàn trước khi thử learned pooling head
+riêng.
+
 ## Paper-style error detector cho CLIP
 
 Paper arXiv:2507.12379 không chỉ hỏi hidden state có decode được nhãn hay
