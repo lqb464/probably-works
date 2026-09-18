@@ -88,9 +88,16 @@ for dataset in CHECKPOINTS:
     display(result[["name", "r1", "r5", "r10", "map", "minp"]])
     grid = pd.read_csv(folder / "validation_grid.csv")
     fig, ax = plt.subplots(figsize=(8, 4))
-    for pool in ["global", "hidden"]:
-        rows = grid[grid.name.str.startswith("ridge_" + pool + "_")].copy()
-        rows["layer"] = rows.name.str.split("_").str[2].astype(int)
+    # Match only the legacy layer curves.  A plain startswith("ridge_hidden_")
+    # also matches ridge_hidden_raw_*, ridge_hidden_attention_*, etc.; in those
+    # names the third underscore-separated field is a pooling label, not a layer.
+    pool_patterns = {
+        "global": r"^ridge_global_(\d+)_",
+        "hidden": r"^ridge_hidden_(\d+)_",
+    }
+    for pool, pattern in pool_patterns.items():
+        rows = grid[grid.name.str.match(pattern)].copy()
+        rows["layer"] = rows.name.str.extract(pattern, expand=False).astype(int)
         curve = rows.groupby("layer").r1.max()
         ax.plot(curve.index, curve.values * 100, marker="o", label=pool)
     ax.set(xlabel="Residual block", ylabel="Selection R@1 (%)",
